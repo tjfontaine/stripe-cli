@@ -1,3 +1,5 @@
+//go:build !wasip1
+
 // Package git provides Git integration for the Stripe CLI.
 package git
 

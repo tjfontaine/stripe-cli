@@ -1,3 +1,5 @@
+//go:build !wasip1
+
 // Package rpcservice implements the gRPC server for CLI integrations.
 package rpcservice
 

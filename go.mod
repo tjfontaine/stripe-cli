@@ -98,3 +98,6 @@ require (
 	golang.org/x/text v0.34.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
+
+// wasip1 WASM compatibility patches
+replace github.com/sirupsen/logrus v1.9.4 => ../patches/logrus
