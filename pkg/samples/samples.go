@@ -1,5 +1,3 @@
-//go:build !wasip1
-
 // Package samples manages Stripe sample application setup.
 package samples
 

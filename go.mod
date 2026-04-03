@@ -100,4 +100,11 @@ require (
 )
 
 // wasip1 WASM compatibility patches
+// wasip1 WASM compatibility patches
 replace github.com/sirupsen/logrus v1.9.4 => ../patches/logrus
+
+// wasip1 WASM compatibility: adds worktree_wasip1.go
+replace github.com/go-git/go-git/v5 v5.17.0 => ../patches/go-git
+
+// wasip1 WASM compatibility: adds stubs for named pipes and ltimes
+replace github.com/otiai10/copy v1.14.1 => ../patches/otiai10-copy
