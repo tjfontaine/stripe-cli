@@ -21,6 +21,20 @@ const TEXT_MESSAGE = 1;
 const BINARY_MESSAGE = 2;
 const CLOSE_MESSAGE = 8;
 
+/** Configuration for WebSocket proxy. */
+export interface WebSocketBridgeConfig {
+    /**
+     * WebSocket proxy URL. When set, connections are made to this proxy
+     * instead of directly to the target. The target URL is passed as a
+     * query parameter so the proxy can open the upstream connection with
+     * custom headers that browsers don't allow (User-Agent, etc).
+     *
+     * Example: 'ws://localhost:3737/ws-proxy'
+     * Browser connects to: ws://localhost:3737/ws-proxy?url=wss://target&proto=subproto
+     */
+    wsProxy?: string;
+}
+
 /**
  * WebSocket bridge using the browser's native WebSocket API.
  *
@@ -30,11 +44,31 @@ const CLOSE_MESSAGE = 8;
 export class WebSocketBridge implements WsBridge {
     private nextHandle = 1;
     private connections = new Map<number, WSConnection>();
+    private config: WebSocketBridgeConfig;
+
+    constructor(config: WebSocketBridgeConfig = {}) {
+        this.config = config;
+    }
 
     connect(url: string): Promise<number> {
+        console.log(`[WebSocketBridge] connecting to ${url}`);
         const handle = this.nextHandle++;
+
+        let connectUrl: string;
+        let protocols: string[] | undefined;
+
+        if (this.config.wsProxy) {
+            // Route through WebSocket proxy — it adds auth headers upstream
+            const subproto = url.includes('stripe.com') ? 'stripecli-devproxy-v1' : '';
+            connectUrl = `${this.config.wsProxy}?url=${encodeURIComponent(url)}&proto=${encodeURIComponent(subproto)}`;
+            console.log(`[WebSocketBridge] via proxy: ${connectUrl}`);
+        } else {
+            connectUrl = url;
+            protocols = url.includes('stripe.com') ? ['stripecli-devproxy-v1'] : undefined;
+        }
+
         const conn: WSConnection = {
-            ws: new WebSocket(url),
+            ws: new WebSocket(connectUrl, protocols),
             messageQueue: [],
             closed: false,
             error: null,
@@ -83,9 +117,13 @@ export class WebSocketBridge implements WsBridge {
         };
 
         return new Promise<number>((resolve) => {
-            conn.ws.onopen = () => resolve(handle);
+            conn.ws.onopen = () => {
+                console.log(`[WebSocketBridge] connected (handle=${handle})`);
+                resolve(handle);
+            };
             const originalOnError = conn.ws.onerror;
             conn.ws.onerror = (ev) => {
+                console.error(`[WebSocketBridge] connection error`, ev);
                 conn.closed = true;
                 conn.error = 'Connection failed';
                 if (originalOnError) originalOnError.call(conn.ws, ev);

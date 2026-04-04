@@ -11,6 +11,7 @@
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { join, extname, dirname } from 'node:path';
+import { WebSocketServer, WebSocket as NodeWebSocket } from 'ws';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -45,7 +46,9 @@ async function serveFile(res, filePath) {
         res.writeHead(200, {
             'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
             'Cross-Origin-Opener-Policy': 'same-origin',
-            'Cross-Origin-Embedder-Policy': 'credentialless',
+            // COEP disabled — WebSocket connections to Stripe fail with credentialless.
+            // JSPI works without COEP in Chrome; only SharedArrayBuffer needs it.
+            // 'Cross-Origin-Embedder-Policy': 'credentialless',
         });
         res.end(data);
     } catch {
@@ -57,6 +60,8 @@ async function serveFile(res, filePath) {
 async function handleCorsProxy(req, res, targetUrl) {
     try {
         const url = new URL(targetUrl);
+        console.log(`[cors-proxy] ${req.method} ${targetUrl}`);
+        console.log(`[cors-proxy] user-agent: ${req.headers['x-original-user-agent'] || req.headers['user-agent'] || '(none)'}`);
 
         // Forward the request
         const headers = { ...req.headers };
@@ -84,6 +89,7 @@ async function handleCorsProxy(req, res, targetUrl) {
         }
 
         const upstream = await fetch(url.href, fetchInit);
+        console.log(`[cors-proxy] → ${upstream.status} ${upstream.statusText}`);
 
         // Forward response headers
         const respHeaders = {
@@ -98,6 +104,9 @@ async function handleCorsProxy(req, res, targetUrl) {
         }
 
         const body = Buffer.from(await upstream.arrayBuffer());
+        console.log(`[cors-proxy] body: ${body.length} bytes`);
+        // Remove content-length — let Node compute it from the actual body
+        delete respHeaders['content-length'];
         res.writeHead(upstream.status, respHeaders);
         res.end(body);
     } catch (err) {
@@ -154,6 +163,101 @@ const server = createServer(async (req, res) => {
     res.end('Not found');
 });
 
+// ============================================================================
+// WebSocket proxy — relays connections with custom headers
+// ============================================================================
+
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+
+    if (url.pathname !== '/ws-proxy') {
+        socket.destroy();
+        return;
+    }
+
+    const targetUrl = url.searchParams.get('url');
+    const subproto = url.searchParams.get('proto') || '';
+
+    if (!targetUrl) {
+        socket.destroy();
+        return;
+    }
+
+    // Extract _ws_header_* params from the target URL — Go encodes auth
+    // headers as query params because browser WebSocket can't send headers.
+    const targetParsed = new URL(targetUrl);
+    const upstreamHeaders = {};
+    for (const [key, value] of targetParsed.searchParams.entries()) {
+        if (key.startsWith('_ws_header_')) {
+            upstreamHeaders[key.slice('_ws_header_'.length)] = value;
+            targetParsed.searchParams.delete(key);
+        }
+    }
+    const cleanTargetUrl = targetParsed.toString();
+
+    console.log(`[ws-proxy] connecting to ${cleanTargetUrl} (proto: ${subproto || 'none'}, headers: ${Object.keys(upstreamHeaders).join(', ') || 'none'})`);
+
+    const upstreamOpts = {
+        headers: upstreamHeaders,
+    };
+    if (subproto) {
+        upstreamOpts.protocol = subproto;
+    }
+
+    const upstream = new NodeWebSocket(cleanTargetUrl, upstreamOpts);
+
+    upstream.on('open', () => {
+        console.log(`[ws-proxy] upstream connected`);
+
+        // Accept the browser-side WebSocket
+        wss.handleUpgrade(req, socket, head, (browserWs) => {
+            console.log(`[ws-proxy] browser connected, relaying`);
+
+            // Relay upstream → browser
+            upstream.on('message', (data, isBinary) => {
+                browserWs.send(data, { binary: isBinary });
+            });
+
+            // Relay browser → upstream
+            browserWs.on('message', (data, isBinary) => {
+                upstream.send(data, { binary: isBinary });
+            });
+
+            // Close propagation — only forward valid close codes (1000-4999)
+            upstream.on('close', (code, reason) => {
+                console.log(`[ws-proxy] upstream closed: ${code}`);
+                try {
+                    browserWs.close(code >= 1000 && code <= 4999 ? code : 1000, reason);
+                } catch { browserWs.close(); }
+            });
+
+            browserWs.on('close', (code, reason) => {
+                console.log(`[ws-proxy] browser closed: ${code}`);
+                try {
+                    upstream.close(code >= 1000 && code <= 4999 ? code : 1000, reason);
+                } catch { upstream.close(); }
+            });
+
+            upstream.on('error', (err) => {
+                console.error(`[ws-proxy] upstream error:`, err.message);
+                browserWs.close();
+            });
+
+            browserWs.on('error', (err) => {
+                console.error(`[ws-proxy] browser error:`, err.message);
+                upstream.close();
+            });
+        });
+    });
+
+    upstream.on('error', (err) => {
+        console.error(`[ws-proxy] upstream connect error:`, err.message);
+        socket.destroy();
+    });
+});
+
 server.listen(PORT, () => {
     console.log(`
   Stripe CLI WASM Example
@@ -164,6 +268,7 @@ server.listen(PORT, () => {
     /stripe.wasm         → ../../bin/stripe.wasm (${formatSize(join(__dirname, '..', '..', 'bin', 'stripe.wasm'))})
     /stripe-cli-wasm/*   → ../npm/dist/*
     /cors-proxy?url=...  → CORS proxy
+    /ws-proxy?url=...    → WebSocket proxy (adds auth headers)
 
   Press Ctrl+C to stop.
 `);

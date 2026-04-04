@@ -188,6 +188,8 @@ protoc-gen-plugin:
 # WASM targets
 # ============================================================================
 
+WASM_VERSION ?= 1.23.8
+
 # Apply the WASM codemod to the source tree (idempotent)
 wasm-codemod:
 	cd wasm/codemod && GOTOOLCHAIN=auto go run . --target ../..
@@ -196,7 +198,7 @@ wasm-codemod:
 # Build the WASM binary (wasip1)
 build-wasm: wasm-codemod
 	GOTOOLCHAIN=auto GOOS=wasip1 GOARCH=wasm go build \
-		-ldflags "-X github.com/stripe/stripe-cli/pkg/version.Version=$(VERSION)" \
+		-ldflags "-X github.com/stripe/stripe-cli/pkg/version.Version=$(WASM_VERSION)" \
 		-o bin/stripe.wasm ./cmd/stripe
 .PHONY: build-wasm
 

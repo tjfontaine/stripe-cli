@@ -143,6 +143,10 @@ var Manifest = Spec{
 		{File: "pkg/cmd/templates.go", FuncName: "getTerminalWidth"},
 		// connect extracted to connect_wasip1.go (uses wasmbridge.Dial instead of gorilla)
 		{File: "pkg/websocket/client.go", FuncName: "connect", Receiver: "*Client"},
+		// Run extracted to proxy_wasip1.go (single-goroutine event loop)
+		{File: "pkg/proxy/proxy.go", FuncName: "Run", Receiver: "*Proxy"},
+		// sendMessage extracted to send_wasip1.go (direct WebSocket write)
+		{File: "pkg/proxy/proxy.go", FuncName: "sendMessage", Receiver: "*Proxy"},
 	},
 
 	VarExtractions: []VarExtraction{

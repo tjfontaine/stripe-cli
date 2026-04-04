@@ -107,14 +107,28 @@ async function runInstance(
         'git:bridge/http-bridge@0.1.0': httpBridgeImports as WebAssembly.ModuleImports,
     };
 
+    // Always provide ws-bridge imports — Go's WASM binary imports them
+    // unconditionally even if stripe listen is never called.
     if (config.wsBridge) {
         const wsBridgeImports = createWsBridgeImports(mem, config.wsBridge, jspi);
         imports['stripe:bridge/ws-bridge@0.1.0'] = wsBridgeImports as WebAssembly.ModuleImports;
+    } else {
+        // Stub — instantiation requires the module to exist
+        imports['stripe:bridge/ws-bridge@0.1.0'] = {
+            'connect': () => 0,
+            'read': () => {},
+            'write': () => 0,
+            'close': () => {},
+        } as WebAssembly.ModuleImports;
     }
 
     if (config.browserActions) {
         const browserImports = createBrowserImports(mem, config.browserActions, jspi);
         imports['host:browser/actions@0.1.0'] = browserImports as WebAssembly.ModuleImports;
+    } else {
+        imports['host:browser/actions@0.1.0'] = {
+            'open-url': () => {},
+        } as WebAssembly.ModuleImports;
     }
 
     // Instantiate
