@@ -141,6 +141,8 @@ var Manifest = Spec{
 		{File: "pkg/fixtures/fixtures.go", FuncName: "getFixtureFilenameWithWildcard"},
 		// getTerminalWidth extracted to templates_wasip1.go (reads COLUMNS env var instead of ioctl)
 		{File: "pkg/cmd/templates.go", FuncName: "getTerminalWidth"},
+		// connect extracted to connect_wasip1.go (uses wasmbridge.Dial instead of gorilla)
+		{File: "pkg/websocket/client.go", FuncName: "connect", Receiver: "*Client"},
 	},
 
 	VarExtractions: []VarExtraction{
@@ -164,6 +166,18 @@ var Manifest = Spec{
 			From: "lc.nonInteractive || !term.IsTerminal(int(os.Stdin.Fd()))",
 			To:   "lc.nonInteractive",
 		},
+		// Replace concrete *ws.Conn with wsConnIface so wasip1 builds can
+		// substitute wasmbridge.Conn (browser WebSocket) for gorilla.
+		{
+			File: "pkg/websocket/client.go",
+			From: "conn             *ws.Conn",
+			To:   "conn             wsConnIface",
+		},
+		{
+			File: "pkg/websocket/client.go",
+			From: "func (c *Client) changeConnection(conn *ws.Conn) {",
+			To:   "func (c *Client) changeConnection(conn wsConnIface) {",
+		},
 	},
 
 	ImportRemovals: []ImportRemoval{
@@ -182,6 +196,9 @@ var Manifest = Spec{
 		{File: "pkg/cmd/login.go", ImportPath: "golang.org/x/term"},
 		// After extracting getTerminalWidth, term is no longer needed in templates.go
 		{File: "pkg/cmd/templates.go", ImportPath: "golang.org/x/term"},
+		// After extracting connect, these imports are only used in connect_wasip1.go
+		{File: "pkg/websocket/client.go", ImportPath: "strings"},
+		{File: "pkg/websocket/client.go", ImportPath: "github.com/stripe/stripe-cli/pkg/useragent"},
 	},
 
 	GoModReplaces: []GoModReplace{
