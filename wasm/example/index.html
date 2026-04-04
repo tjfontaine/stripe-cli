@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stripe CLI — WebAssembly Demo</title>
+    <link rel="stylesheet" href="https://esm.sh/@xterm/xterm@6.0.0/css/xterm.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0a;
+            color: #e0e0e0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        header {
+            padding: 12px 20px;
+            border-bottom: 1px solid #222;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        header h1 { font-size: 15px; font-weight: 600; }
+        .badge {
+            font-size: 10px;
+            background: #635bff;
+            color: white;
+            padding: 2px 7px;
+            border-radius: 3px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+        #status {
+            font-size: 12px;
+            color: #666;
+            margin-left: auto;
+            font-family: monospace;
+        }
+        #api-key-bar {
+            padding: 10px 20px;
+            border-bottom: 1px solid #222;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: #111;
+            flex-shrink: 0;
+        }
+        #api-key-bar label {
+            font-size: 12px;
+            color: #888;
+            white-space: nowrap;
+        }
+        #api-key-bar input {
+            flex: 1;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #e0e0e0;
+            font-family: monospace;
+            font-size: 12px;
+            padding: 5px 10px;
+            outline: none;
+        }
+        #api-key-bar input:focus { border-color: #635bff; }
+        #api-key-bar input::placeholder { color: #444; }
+        #api-key-bar .hint {
+            font-size: 11px;
+            color: #555;
+        }
+        #terminal-container {
+            flex: 1;
+            padding: 4px;
+            overflow: hidden;
+        }
+    </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "@xterm/xterm": "https://esm.sh/@xterm/xterm@6.0.0",
+            "@xterm/addon-fit": "https://esm.sh/@xterm/addon-fit@0.11.0",
+            "@xterm/addon-webgl": "https://esm.sh/@xterm/addon-webgl@0.19.0",
+            "stripe-cli-wasm": "/stripe-cli-wasm/index.js",
+            "stripe-cli-wasm/bridges/fetch-http-bridge": "/stripe-cli-wasm/bridges/fetch-http-bridge.js",
+            "stripe-cli-wasm/fs/memory-provider": "/stripe-cli-wasm/fs/memory-provider.js"
+        }
+    }
+    </script>
+</head>
+<body>
+    <header>
+        <h1>Stripe CLI</h1>
+        <span class="badge">WASM</span>
+        <span id="status">Loading...</span>
+    </header>
+    <div id="api-key-bar">
+        <label for="api-key">STRIPE_API_KEY</label>
+        <input id="api-key" type="password" placeholder="sk_test_..." spellcheck="false" autocomplete="off">
+        <span class="hint">Optional — needed for API commands</span>
+    </div>
+    <div id="terminal-container"></div>
+
+    <script type="module">
+        import { Terminal } from '@xterm/xterm';
+        import { FitAddon } from '@xterm/addon-fit';
+        import { WebglAddon } from '@xterm/addon-webgl';
+
+        import { loadStripeCli } from 'stripe-cli-wasm';
+        import { FetchHttpBridge } from 'stripe-cli-wasm/bridges/fetch-http-bridge';
+        import { MemoryFilesystemProvider } from 'stripe-cli-wasm/fs/memory-provider';
+
+        // =====================================================================
+        // Terminal setup
+        // =====================================================================
+
+        const term = new Terminal({
+            fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace",
+            fontSize: 13,
+            lineHeight: 1.3,
+            convertEol: true,
+            cursorBlink: true,
+            cursorStyle: 'bar',
+            theme: {
+                background: '#0a0a0a',
+                foreground: '#e0e0e0',
+                cursor: '#635bff',
+                selectionBackground: '#635bff40',
+                black: '#1a1a1a',
+                brightBlack: '#555',
+                white: '#e0e0e0',
+                brightWhite: '#fff',
+                blue: '#635bff',
+                brightBlue: '#7c75ff',
+                green: '#51cf66',
+                brightGreen: '#69db7c',
+                red: '#ff6b6b',
+                brightRed: '#ff8787',
+                yellow: '#ffd43b',
+                brightYellow: '#ffe066',
+                cyan: '#66d9ef',
+                brightCyan: '#99e9f2',
+                magenta: '#cc78d5',
+                brightMagenta: '#da8ee7',
+            },
+        });
+
+        const fitAddon = new FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(document.getElementById('terminal-container'));
+
+        try { term.loadAddon(new WebglAddon()); } catch { /* canvas fallback */ }
+
+        fitAddon.fit();
+        window.addEventListener('resize', () => fitAddon.fit());
+
+        const statusEl = document.getElementById('status');
+        const apiKeyInput = document.getElementById('api-key');
+
+        // =====================================================================
+        // Stdin buffer — bridges xterm.js input to WASI fd_read
+        // =====================================================================
+
+        class StdinBuffer {
+            constructor() {
+                this._buffer = [];
+                this._resolve = null;
+            }
+
+            push(data) {
+                if (this._resolve) {
+                    const resolve = this._resolve;
+                    this._resolve = null;
+                    resolve(new TextEncoder().encode(data));
+                } else {
+                    this._buffer.push(...new TextEncoder().encode(data));
+                }
+            }
+
+            read(maxBytes) {
+                if (this._buffer.length > 0) {
+                    const n = Math.min(maxBytes, this._buffer.length);
+                    return new Uint8Array(this._buffer.splice(0, n));
+                }
+                return new Promise(resolve => { this._resolve = resolve; });
+            }
+        }
+
+        // =====================================================================
+        // Shell — line editor with history
+        // =====================================================================
+
+        const PROMPT = '\x1b[38;2;99;91;255m$\x1b[0m ';
+        const history = [];
+        let historyIndex = -1;
+        let currentLine = '';
+        let cursorPos = 0;
+        let running = false;
+        const stdinBuf = new StdinBuffer();
+
+        function writePrompt() {
+            term.write('\r\n' + PROMPT);
+            currentLine = '';
+            cursorPos = 0;
+            historyIndex = -1;
+        }
+
+        function redrawLine() {
+            term.write('\x1b[2K\r' + PROMPT + currentLine);
+            if (cursorPos < currentLine.length) {
+                term.write(`\x1b[${currentLine.length - cursorPos}D`);
+            }
+        }
+
+        term.onData((data) => {
+            if (running) { stdinBuf.push(data); return; }
+
+            for (let i = 0; i < data.length; i++) {
+                const ch = data[i];
+                const code = data.charCodeAt(i);
+
+                if (ch === '\r' || ch === '\n') {
+                    term.write('\r\n');
+                    const cmd = currentLine.trim();
+                    if (cmd) { history.push(cmd); runCommand(cmd); }
+                    else { writePrompt(); }
+                    return;
+                }
+
+                if (code === 127 || code === 8) {
+                    if (cursorPos > 0) {
+                        currentLine = currentLine.slice(0, cursorPos - 1) + currentLine.slice(cursorPos);
+                        cursorPos--;
+                        redrawLine();
+                    }
+                    continue;
+                }
+
+                if (ch === '\x1b' && data[i + 1] === '[') {
+                    const arrow = data[i + 2]; i += 2;
+                    if (arrow === 'A') {
+                        if (history.length > 0) {
+                            if (historyIndex === -1) historyIndex = history.length;
+                            if (historyIndex > 0) { historyIndex--; currentLine = history[historyIndex]; cursorPos = currentLine.length; redrawLine(); }
+                        }
+                    } else if (arrow === 'B') {
+                        if (historyIndex >= 0 && historyIndex < history.length - 1) { historyIndex++; currentLine = history[historyIndex]; }
+                        else { historyIndex = -1; currentLine = ''; }
+                        cursorPos = currentLine.length; redrawLine();
+                    } else if (arrow === 'C') { if (cursorPos < currentLine.length) { cursorPos++; term.write('\x1b[C'); } }
+                      else if (arrow === 'D') { if (cursorPos > 0) { cursorPos--; term.write('\x1b[D'); } }
+                    continue;
+                }
+
+                if (code === 3) { term.write('^C'); writePrompt(); return; }
+                if (code === 12) { term.clear(); term.write(PROMPT + currentLine); continue; }
+
+                if (code >= 32) {
+                    currentLine = currentLine.slice(0, cursorPos) + ch + currentLine.slice(cursorPos);
+                    cursorPos++;
+                    redrawLine();
+                }
+            }
+        });
+
+        // =====================================================================
+        // Load Stripe CLI WASM
+        // =====================================================================
+
+        term.writeln('\x1b[2mInitializing Stripe CLI WASM...\x1b[0m');
+        statusEl.textContent = 'Compiling WASM...';
+
+        let stripe;
+        try {
+            stripe = await loadStripeCli({
+                wasm: '/stripe.wasm',
+                httpBridge: new FetchHttpBridge({
+                    corsProxy: '/cors-proxy',
+                    corsProxyRoutes: [
+                        { host: 'dashboard.stripe.com', pathPrefix: '/stripecli/' },
+                    ],
+                    proxyHeaders: { 'X-Agent-Proxy': 'stripe-cli-wasm-example' },
+                }),
+                filesystem: new MemoryFilesystemProvider(),
+                browserActions: {
+                    openUrl(url) {
+                        term.writeln(`\x1b[2mOpening: ${url}\x1b[0m`);
+                        window.open(url, '_blank');
+                    },
+                },
+            });
+
+            statusEl.textContent = 'Ready';
+            term.writeln('\x1b[32mReady.\x1b[0m Type \x1b[1mstripe help\x1b[0m to get started.');
+            term.writeln('\x1b[2mTip: paste a test API key above to use commands like "stripe customers list".\x1b[0m');
+            writePrompt();
+            term.focus();
+        } catch (err) {
+            statusEl.textContent = 'Failed';
+            term.writeln(`\x1b[31mFailed to load: ${err.message}\x1b[0m`);
+            term.writeln('');
+            term.writeln('\x1b[2mMake sure you have built the WASM binary:\x1b[0m');
+            term.writeln('\x1b[2m  make build-wasm\x1b[0m');
+            term.writeln('');
+            term.writeln('\x1b[2mThen start the example server:\x1b[0m');
+            term.writeln('\x1b[2m  cd wasm/example && npm run setup && npm start\x1b[0m');
+            throw err;
+        }
+
+        // =====================================================================
+        // Run stripe commands
+        // =====================================================================
+
+        async function runCommand(input) {
+            const args = input.split(/\s+/).filter(s => s);
+            if (args.length === 0) { writePrompt(); return; }
+            if (args[0] === 'clear') { term.clear(); writePrompt(); return; }
+            if (args[0] !== 'stripe') args.unshift('stripe');
+
+            running = true;
+            statusEl.textContent = `Running: ${args.join(' ')}`;
+
+            const env = [
+                ['COLUMNS', String(term.cols)],
+                ['LINES', String(term.rows)],
+                ['TERM', 'xterm-256color'],
+            ];
+            const apiKey = apiKeyInput.value.trim();
+            if (apiKey) env.push(['STRIPE_API_KEY', apiKey]);
+
+            try {
+                const result = await stripe.run({
+                    args,
+                    env,
+                    stdout: (data) => term.write(new Uint8Array(data)),
+                    stderr: (data) => term.write(new Uint8Array(data)),
+                    stdin: (maxBytes) => stdinBuf.read(maxBytes),
+                });
+
+                if (result.exitCode > 1) {
+                    term.writeln(`\x1b[2m(exit ${result.exitCode})\x1b[0m`);
+                }
+            } catch (err) {
+                term.writeln(`\x1b[31mError: ${err.message}\x1b[0m`);
+            }
+
+            running = false;
+            statusEl.textContent = 'Ready';
+            writePrompt();
+        }
+    </script>
+</body>
+</html>

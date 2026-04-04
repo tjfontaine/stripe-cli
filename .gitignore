@@ -15,6 +15,7 @@ wasm/npm/dist/
 wasm/npm/node_modules/
 wasm/npm/*.tsbuildinfo
 wasm/npm/wasm/
+wasm/example/node_modules/
 
 # Claude Code local configuration (auto-added)
 .claude/*.local.*

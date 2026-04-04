@@ -1,0 +1,12 @@
+{
+    "name": "stripe-cli-wasm-example",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "start": "npx serve .",
+        "setup": "npm install && cd ../npm && npm install && npm run build"
+    },
+    "dependencies": {
+        "stripe-cli-wasm": "file:../npm"
+    }
+}
