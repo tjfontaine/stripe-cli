@@ -1,0 +1,65 @@
+{
+    "name": "stripe-cli-wasm",
+    "version": "0.1.0",
+    "description": "Run Stripe CLI in the browser via WebAssembly",
+    "type": "module",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        },
+        "./types": {
+            "types": "./dist/types.d.ts",
+            "import": "./dist/types.js"
+        },
+        "./bridges/types": {
+            "types": "./dist/bridges/types.d.ts",
+            "import": "./dist/bridges/types.js"
+        },
+        "./bridges/fetch-http-bridge": {
+            "types": "./dist/bridges/fetch-http-bridge.d.ts",
+            "import": "./dist/bridges/fetch-http-bridge.js"
+        },
+        "./bridges/xhr-http-bridge": {
+            "types": "./dist/bridges/xhr-http-bridge.d.ts",
+            "import": "./dist/bridges/xhr-http-bridge.js"
+        },
+        "./bridges/websocket-bridge": {
+            "types": "./dist/bridges/websocket-bridge.d.ts",
+            "import": "./dist/bridges/websocket-bridge.js"
+        },
+        "./bridges/noop-browser-actions": {
+            "types": "./dist/bridges/noop-browser-actions.d.ts",
+            "import": "./dist/bridges/noop-browser-actions.js"
+        },
+        "./fs/types": {
+            "types": "./dist/fs/types.d.ts",
+            "import": "./dist/fs/types.js"
+        },
+        "./fs/opfs-provider": {
+            "types": "./dist/fs/opfs-provider.d.ts",
+            "import": "./dist/fs/opfs-provider.js"
+        },
+        "./fs/memory-provider": {
+            "types": "./dist/fs/memory-provider.d.ts",
+            "import": "./dist/fs/memory-provider.js"
+        }
+    },
+    "files": [
+        "dist",
+        "wasm"
+    ],
+    "scripts": {
+        "build": "tsc",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "typecheck": "tsc --noEmit",
+        "prepublishOnly": "npm run build && mkdir -p wasm && cp ../stripe.wasm wasm/",
+        "clean": "rm -rf dist"
+    },
+    "devDependencies": {
+        "typescript": "^5.7.0",
+        "vitest": "^3.2.0"
+    },
+    "license": "MIT"
+}
