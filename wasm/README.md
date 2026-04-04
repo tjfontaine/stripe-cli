@@ -10,7 +10,8 @@ wasm/
 ├── patches/     Dependency forks for wasip1 compatibility
 ├── wit/         WIT interface definitions (bridge contracts)
 ├── adapters/    Pre-built wasip1→wasip2 adapter binary
-└── npm/         TypeScript runtime package (stripe-cli-wasm)
+├── npm/         TypeScript runtime package (stripe-cli-wasm)
+└── example/     Interactive demo — xterm.js terminal with dev server
 ```
 
 ## Quick start
@@ -64,6 +65,24 @@ Browser:
 
 **Key design decision:** The raw wasip1 binary is loaded directly, bypassing the WASM Component Model adapter. Go's runtime initialization creates 568 init functions that exhaust the browser's call stack when routed through the component model's adapter trampolines. The JavaScript runtime (`wasm/npm/`) provides the WASI Preview1 ABI directly.
 
+### Why `GOOS=wasip1` instead of `GOOS=js`
+
+Go has two WASM targets. We use `wasip1` despite `js` having better goroutine support:
+
+| | `GOOS=wasip1 GOARCH=wasm` | `GOOS=js GOARCH=wasm` |
+|---|---|---|
+| **Goroutine scheduling** | Cooperative, single-threaded. Goroutines that block on channels/timers deadlock the instance. | Event-loop integrated. `pause()` returns control to JS; `setTimeout`/`handleEvent` wake the scheduler. Goroutines work correctly. |
+| **Network** | No network stack. `net.Dial` panics. Custom `wasmbridge.Transport` bridges to `fetch()`. | `net/http` wired to `fetch()` via `syscall/js`. HTTP works out of the box. |
+| **Host interop** | `//go:wasmimport` only — flat functions with scalar args. No access to JS APIs. | Full `syscall/js` — direct access to DOM, fetch, WebSocket, setTimeout, etc. |
+| **Filesystem** | Real WASI Preview1 filesystem (fd_open, fd_read, etc.) backed by OPFS or in-memory provider. | Fake filesystem via `syscall/js`. No standard interface. |
+| **Loading** | Standard WASI module — any WASI host can load it. | Requires `wasm_exec.js` (~15KB Go runtime shim). Browser-only. |
+| **Portability** | Runs in browsers, wasmtime, wazero, edge runtimes, Cloudflare Workers. | Browsers only. |
+| **Ecosystem path** | wasip1 → wasip2 → wasip3 (component model, standard interfaces). | Frozen — no evolution path toward WASI standards. |
+
+**What we give up with wasip1:** goroutine scheduling (needed the single-goroutine proxy overlay for `stripe listen`) and built-in fetch/WebSocket (needed custom bridges). **What we gain:** portability, standard WASI interfaces, and alignment with the component model ecosystem. When `GOOS=wasip3` lands ([golang/go#77141](https://github.com/golang/go/issues/77141)), we get goroutine scheduling back without losing any of these benefits.
+
+**Dual-target possibility:** The codemod overlays are build-tagged `//go:build wasip1`. A `//go:build js` set could use `syscall/js` for bridges directly. The same source tree could produce both targets — wasip1 for portability, js for goroutine-heavy commands like `stripe listen` without the proxy overlay. This is not currently implemented but the architecture supports it.
+
 ### The codemod approach
 
 Rather than maintaining a permanent fork with inline WASM patches scattered across the codebase, we use a **codemod** — an AST-based Go source transformer that applies targeted, reproducible modifications:
@@ -79,13 +98,17 @@ The codemod is **idempotent** — running it twice produces the same result. Thi
 
 | Category | Count | Examples |
 |----------|-------|---------|
-| Build tag exclusions | ~27 files | `pkg/rpcservice/*`, `pkg/terminal/*`, `pkg/cmd/daemon.go` |
-| Function extractions | 3 functions + 1 var | `newHTTPClient`, `EditConfig`, `getFixtureFilenameWithWildcard`, `Edit` var |
-| Inline replacements | 2 | HTTP client init, terminal check removal |
+| Build tag exclusions | ~28 files | `pkg/rpcservice/*`, `pkg/terminal/*`, `pkg/cmd/daemon.go` |
+| Function extractions | 6 functions + 1 var | `newHTTPClient`, `EditConfig`, `getFixtureFilenameWithWildcard`, `getTerminalWidth`, `connect`, `Run`, `sendMessage`, `Edit` var |
+| Inline replacements | 4 | HTTP client init, terminal check, `*ws.Conn` → `wsConnIface`, `changeConnection` |
 | go.mod replaces | 3 | logrus, go-git, otiai10-copy |
+| Import removals | 9 | Unused imports after extractions |
 
 Files added by overlays:
 - `pkg/wasmbridge/` — HTTP and WebSocket bridges via `//go:wasmimport`
+- `pkg/websocket/` — wsConnIface, wasmbridge WebSocket connection, wasip1 dial
+- `pkg/proxy/` — single-goroutine proxy for `stripe listen`
+- `pkg/cmd/templates_wasip1.go` — reads COLUMNS env var for help formatting
 - `*_wasip1.go` platform-split files for extracted functions
 - Stubs for daemon, terminal, rpcservice (wasip1 builds)
 
@@ -149,21 +172,33 @@ The `wasm/npm/` directory contains a standalone TypeScript package that loads th
 ```typescript
 import { loadStripeCli } from 'stripe-cli-wasm';
 import { FetchHttpBridge } from 'stripe-cli-wasm/bridges/fetch-http-bridge';
-import { OpfsFilesystemProvider } from 'stripe-cli-wasm/fs/opfs-provider';
+import { WebSocketBridge } from 'stripe-cli-wasm/bridges/websocket-bridge';
+import { MemoryFilesystemProvider } from 'stripe-cli-wasm/fs/memory-provider';
 
 const stripe = await loadStripeCli({
     wasm: '/path/to/stripe.wasm',
-    httpBridge: new FetchHttpBridge(),
-    filesystem: new OpfsFilesystemProvider('stripe'),
+    httpBridge: new FetchHttpBridge({
+        corsProxy: '/cors-proxy',
+        corsProxyRoutes: [
+            { host: 'dashboard.stripe.com', pathPrefix: '/stripecli/' },
+            { host: 'api.stripe.com', pathPrefix: '/v1/stripecli/' },
+        ],
+    }),
+    wsBridge: new WebSocketBridge({ wsProxy: 'ws://localhost:3000/ws-proxy' }),
+    filesystem: new MemoryFilesystemProvider(),
 });
 
+// Pass STRIPE_API_KEY via env — no `stripe login` required
 const result = await stripe.run({
     args: ['stripe', 'customers', 'list', '--limit', '3'],
+    env: [['STRIPE_API_KEY', 'sk_test_...']],
     stdout: (data) => terminal.write(data),
     stderr: (data) => terminal.write(data),
 });
 // result.exitCode === 0
 ```
+
+**Note:** The CORS proxy and WebSocket proxy are server-side components needed for `stripe login` and `stripe listen`. See `wasm/example/server.mjs` for a reference implementation.
 
 ### Injection points
 
@@ -214,44 +249,88 @@ If upstream changes conflict with codemod modifications (e.g., a function signat
 
 ### `wasi:http` standardization
 
-The current bridge interfaces (`stripe:bridge/http-bridge`, `stripe:bridge/ws-bridge`) are custom flat ABIs designed around Go's `//go:wasmimport` limitations. As the ecosystem matures:
+The bridge interfaces (`stripe:bridge/http-bridge`, `stripe:bridge/ws-bridge`) are custom flat ABIs designed around Go's `//go:wasmimport` limitations. As the ecosystem matures:
 
-- **`wasi:http/outgoing-handler`** could replace the HTTP bridge. The JavaScript runtime already supports this — an adapter layer maps the standard interface to the flat bridge. When Go gains native component model support (see below), the flat bridge can be removed entirely.
-- **`wasi:http/incoming-handler`** could replace `stripe listen`'s forwarding mechanism. Currently `stripe listen --forward-to URL` makes an HTTP POST to a local endpoint — impossible in WASM. With `incoming-handler`, webhook events flow as in-process function calls. This would require a codemod addition: extract `endpoint.go`'s `Post()` method into a wasip1 overlay that calls a `webhook-forward` bridge import instead of `http.Post()`.
-
-### WebSocket standardization
-
-There is no WASI WebSocket specification yet. The `ws-bridge` interface is custom. When a standard emerges, the bridge can be swapped at the JavaScript runtime level without changing Go code.
+- **`wasi:http/outgoing-handler`** could replace the HTTP bridge. The JavaScript runtime already supports an adapter layer.
+- **`wasi:http/incoming-handler`** could enable webhook forwarding — `stripe listen --forward-to` events delivered as in-process function calls instead of HTTP POST to localhost.
 
 ### Go WASM Component Model
 
-Go's WASM support is evolving:
-
 - **Go 1.21+**: `GOOS=wasip1` produces core WASM modules (what we use today)
-- **`GOOS=wasip2`** ([golang/go#65333](https://github.com/golang/go/issues/65333)): Proposed but backlogged. Would produce component model modules natively.
-- **`GOOS=wasip3`** ([golang/go#77141](https://github.com/golang/go/issues/77141)): Active proposal (March 2026). Targets the async component model with proper goroutine scheduling — the Go team may skip wasip2 entirely.
+- **`GOOS=wasip2`** ([golang/go#65333](https://github.com/golang/go/issues/65333)): Proposed but backlogged.
+- **`GOOS=wasip3`** ([golang/go#77141](https://github.com/golang/go/issues/77141)): Active proposal. Targets async component model with proper goroutine scheduling — would eliminate the need for the single-goroutine proxy overlay and the flat bridge ABI.
 
-When Go gains native component model support, the flat bridge ABI and the direct wasip1 loader can be replaced with standard `wasi:http` imports. The codemod approach means this is a surgical change to the overlays and manifest, not a rewrite.
+### WebSocket library
 
-### TinyGo alternative
-
-[TinyGo](https://tinygo.org/) v0.33+ can produce wasip2 components natively (`tinygo build -target=wasip2`), but stripe-cli requires the full Go standard library (net/http, encoding/json, crypto, etc.) which TinyGo doesn't fully support. Standard Go remains the only viable compiler for this codebase.
+The `proxy_wasip1.go` overlay works around gorilla/websocket's goroutine-heavy design. A cleaner path: replace gorilla with [coder/websocket](https://github.com/coder/websocket) which accepts `http.Client` for the upgrade handshake (routing through `wasmbridge.Transport` automatically) and uses explicit read/write calls instead of background goroutines. See the `stripe listen` section above for details.
 
 ### Binary size
 
-The wasip1 binary is ~47MB. Potential optimizations:
+The wasip1 binary is ~47MB. The browser caches the compiled module after first load. Potential optimizations: `-ldflags "-s -w"` (strips debug info), `wasm-opt` (Binaryen size optimization), lazy-loaded subcommands.
 
-- **`-ldflags "-s -w"`** strips debug info (already used in production builds via GoReleaser)
-- **`wasm-opt`** (Binaryen) can optimize the WASM binary for size
-- **Lazy-loaded subcommands** — split rarely-used commands into separate WASM modules loaded on demand
-- The browser caches the compiled module after first load, so the 47MB download is a one-time cost
+### `stripe listen` — how it works in WASM
 
-### `stripe listen` in-browser
+`stripe listen` is fully functional in the browser. The implementation solves two challenges:
 
-Full `stripe listen` support requires:
+**1. Goroutine scheduling**
 
-1. ✅ WebSocket bridge for event streaming from Stripe
-2. 🔲 Webhook forwarding via `wasi:http/incoming-handler` (in-process, no localhost needed)
-3. 🔲 Codemod overlay for `pkg/proxy/endpoint.go` to use the bridge instead of `http.Post()`
+Go's wasip1 target runs all goroutines on a single thread with cooperative scheduling. The upstream stripe-cli uses gorilla/websocket with 5+ concurrent goroutines (read pump, write pump, main select loop, connection monitor, ping ticker). In wasip1, these goroutines deadlock — when one blocks on a channel waiting for another that needs to run, the entire WASM instance freezes.
 
-This would enable fully in-browser webhook development — Stripe events flow directly to the developer's application code running in the same browser context.
+The solution: a codemod overlay (`pkg/proxy/proxy_wasip1.go`) replaces the goroutine-based proxy with a **single-goroutine event loop**. WebSocket reads block via JSPI (JavaScript Promise Integration) — the WASM stack suspends until a message arrives from Stripe, then resumes to process it synchronously. No channels, no select, no time.After, no deadlocks.
+
+```
+Upstream (native):                    WASM (wasip1):
+┌─ goroutine: readPump ─┐            ┌─ single goroutine ──────────┐
+│  conn.ReadMessage()    │            │  for {                      │
+│  → eventHandler chan   │            │    msg = ReadMessage()      │
+├─ goroutine: writePump ─┤            │    // JSPI suspends here    │
+│  ← send chan           │            │    ProcessEvent(msg)        │
+│  conn.WriteJSON()      │            │    SendAck(msg)             │
+├─ goroutine: main ──────┤            │  }                         │
+│  select { ... }        │            └────────────────────────────┘
+└────────────────────────┘
+```
+
+This will be unnecessary once Go supports `GOOS=wasip3` ([golang/go#77141](https://github.com/golang/go/issues/77141)), which provides per-goroutine async suspension via the WASM Component Model. The overlay can then be removed.
+
+**2. WebSocket auth headers**
+
+Stripe's WebSocket endpoint requires custom HTTP headers (`Websocket-Id`, `User-Agent`, `X-Stripe-Client-User-Agent`) during the upgrade handshake. The browser's `WebSocket` constructor does not support custom headers — only URL and subprotocol.
+
+The solution: a **WebSocket proxy** on the server side. The Go code encodes auth headers as `_ws_header_*` query parameters in the WebSocket URL. The JavaScript `WebSocketBridge` routes the connection through a configurable proxy (`wsProxy` option). The proxy extracts the `_ws_header_*` params, strips them from the URL, and forwards the connection to Stripe with the headers as real HTTP headers.
+
+```
+Go WASM:
+  wasmbridge.Dial("wss://stripe.com/subscribe/acct?..&_ws_header_Websocket-Id=xxx")
+     ↓
+WebSocketBridge (browser):
+  new WebSocket("ws://localhost:3737/ws-proxy?url=wss%3A%2F%2Fstripe.com%2F...&proto=stripecli-devproxy-v1")
+     ↓
+Node.js ws-proxy:
+  extracts _ws_header_* → sends as real HTTP headers
+  new WebSocket("wss://stripe.com/subscribe/acct?websocket_feature=...", {
+    headers: { "Websocket-Id": "xxx", "User-Agent": "Stripe/v1 stripe-cli/1.23.8" }
+  })
+     ↓
+Stripe event stream ↔ relay ↔ browser ↔ WASM
+```
+
+See `wasm/example/server.mjs` for the proxy implementation.
+
+**3. Webhook forwarding (future)**
+
+`stripe listen --forward-to URL` forwards received events to a local HTTP endpoint. In WASM there is no local HTTP server to forward to. Future options:
+
+- **`wasi:http/incoming-handler`** — deliver events as in-process function calls to the embedder's handler, no HTTP POST needed
+- **Embedder callback** — a `WebhookForwardBridge` interface where the embedder provides a function to receive events directly
+
+### Replacing gorilla/websocket
+
+The goroutine workaround above is effective but adds complexity. A cleaner long-term path: replace gorilla/websocket with [coder/websocket](https://github.com/coder/websocket) (the maintained successor to nhooyr.io/websocket).
+
+Key differences from gorilla:
+- **`Dial` accepts `http.Client`** — the upgrade handshake goes through `http.Client.Do(req)`, which would route through `wasmbridge.Transport` automatically
+- **No background goroutines** — read/write are explicit calls, not concurrent pumps
+- **Build-tagged dial** — already has `ws_js.go` for `GOOS=js`. A `dial_wasip1.go` wrapping `wasmbridge.Conn` follows the same pattern
+
+This would eliminate the proxy_wasip1.go overlay entirely — the library itself would be wasip1-compatible. The WebSocket proxy would still be needed for auth headers (browser limitation, not library limitation).
