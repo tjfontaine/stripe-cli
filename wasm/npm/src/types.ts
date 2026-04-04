@@ -53,6 +53,12 @@ export interface RunOptions {
     stdout: (data: Uint8Array) => void;
     /** Callback for stderr data. */
     stderr: (data: Uint8Array) => void;
+    /**
+     * Callback for stdin reads. Returns bytes to feed to the process.
+     * Return an empty Uint8Array for EOF. If omitted, stdin returns EOF immediately.
+     * May return a Promise (suspended via JSPI in async mode).
+     */
+    stdin?: (maxBytes: number) => Uint8Array | Promise<Uint8Array>;
 }
 
 /**

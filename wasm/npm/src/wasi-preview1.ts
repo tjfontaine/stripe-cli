@@ -130,6 +130,7 @@ export interface WasiConfig {
     cwd: string;
     stdoutWrite: (data: Uint8Array) => void;
     stderrWrite: (data: Uint8Array) => void;
+    stdinRead?: (maxBytes: number) => Uint8Array | Promise<Uint8Array>;
 }
 
 // ============================================================================
@@ -447,8 +448,29 @@ export function createWasiImports(
     async function asyncFdRead(
         fd: number, iovs: number, niovs: number, nreadPtr: number,
     ): Promise<number> {
-        if (fd <= 2) {
-            // stdin: return EOF
+        // stdin
+        if (fd === 0) {
+            if (!config.stdinRead) {
+                new DataView(getMem()).setUint32(nreadPtr, 0, true);
+                return ERRNO.SUCCESS;
+            }
+            const view = new DataView(getMem());
+            let totalRead = 0;
+            for (let i = 0; i < niovs; i++) {
+                const ptr = view.getUint32(iovs + i * 8, true);
+                const len = view.getUint32(iovs + i * 8 + 4, true);
+                if (len === 0) continue;
+                const data = await config.stdinRead(len);
+                if (data.length === 0) break;
+                new Uint8Array(getMem(), ptr, data.length).set(data);
+                totalRead += data.length;
+                if (data.length < len) break;
+            }
+            view.setUint32(nreadPtr, totalRead, true);
+            return ERRNO.SUCCESS;
+        }
+        // stdout/stderr reads return EOF
+        if (fd === 1 || fd === 2) {
             new DataView(getMem()).setUint32(nreadPtr, 0, true);
             return ERRNO.SUCCESS;
         }

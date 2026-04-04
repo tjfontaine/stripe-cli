@@ -93,6 +93,7 @@ async function runInstance(
         cwd: options.cwd || '/',
         stdoutWrite: options.stdout,
         stderrWrite: options.stderr,
+        stdinRead: options.stdin,
     };
     const wasiImports = createWasiImports(getMem, fdTable, config.filesystem, wasiConfig, jspi);
 
