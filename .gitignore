@@ -10,5 +10,11 @@ default_cassette.yaml
 stripe-completion.bash
 stripe-completion.zsh
 
+# WASM build artifacts
+wasm/npm/dist/
+wasm/npm/node_modules/
+wasm/npm/*.tsbuildinfo
+wasm/npm/wasm/
+
 # Claude Code local configuration (auto-added)
 .claude/*.local.*

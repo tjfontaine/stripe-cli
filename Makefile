@@ -184,4 +184,49 @@ protoc-gen-plugin:
 	@echo "Successfully compiled proto files for plugins"
 .PHONY: protoc-plugin
 
+# ============================================================================
+# WASM targets
+# ============================================================================
+
+# Apply the WASM codemod to the source tree (idempotent)
+wasm-codemod:
+	cd wasm/codemod && GOTOOLCHAIN=auto go run . --target ../..
+.PHONY: wasm-codemod
+
+# Build the WASM binary (wasip1)
+build-wasm: wasm-codemod
+	GOTOOLCHAIN=auto GOOS=wasip1 GOARCH=wasm go build \
+		-ldflags "-X github.com/stripe/stripe-cli/pkg/version.Version=$(VERSION)" \
+		-o bin/stripe.wasm ./cmd/stripe
+.PHONY: build-wasm
+
+# Adapt wasip1 binary to wasip2 component (embed WIT + apply adapter)
+build-wasm-component: build-wasm
+	wasm-tools component embed wasm/wit/ --world stripe:cli/stripe-cli \
+		bin/stripe.wasm -o bin/stripe-embedded.wasm
+	wasm-tools component new bin/stripe-embedded.wasm \
+		--adapt wasi_snapshot_preview1=wasm/adapters/wasi_snapshot_preview1.command.wasm \
+		-o bin/stripe-component.wasm
+.PHONY: build-wasm-component
+
+# Build the npm runtime package
+build-wasm-npm:
+	cd wasm/npm && npm install && npm run build
+.PHONY: build-wasm-npm
+
+# Run npm package tests
+test-wasm-npm:
+	cd wasm/npm && npm test
+.PHONY: test-wasm-npm
+
+# Full WASM pipeline
+wasm: build-wasm-component build-wasm-npm
+.PHONY: wasm
+
+# Clean WASM artifacts
+clean-wasm:
+	rm -f bin/stripe.wasm bin/stripe-embedded.wasm bin/stripe-component.wasm
+	rm -rf wasm/npm/dist wasm/npm/node_modules
+.PHONY: clean-wasm
+
 .DEFAULT_GOAL := build
