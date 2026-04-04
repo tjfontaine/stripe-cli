@@ -17,7 +17,6 @@ import (
 	"github.com/spf13/afero"
 	"github.com/tidwall/gjson"
 
-	"github.com/stripe/stripe-cli/pkg/git"
 	"github.com/stripe/stripe-cli/pkg/parsers"
 	"github.com/stripe/stripe-cli/pkg/requests"
 )
@@ -271,23 +270,7 @@ func (fxt *Fixture) Edit(path string, filedata []byte) ([]byte, error) {
 	return Edit(path, filedata)
 }
 
-// Edit is separated into a var so we can mock this in fixtures_test
-var Edit = func(path string, filedata []byte) ([]byte, error) {
-	filename := getFixtureFilenameWithWildcard(path)
-	editor, err := git.NewTemporaryFileEditor(filename, filedata)
-	if err != nil {
-		return nil, err
-	}
-
-	return editor.EditContent()
-}
-
-func getFixtureFilenameWithWildcard(path string) string {
-	pathComponents := strings.Split(path, "/")
-	fixtureName := strings.Split(pathComponents[len(pathComponents)-1], ".")
-	// Add a wildcard that is replaced by a random string when passing this filename to os.CreateTemp
-	return strings.Join(fixtureName[0:len(fixtureName)-1], ".") + ".*." + fixtureName[len(fixtureName)-1]
-}
+// Add a wildcard that is replaced by a random string when passing this filename to os.CreateTemp
 
 // Execute takes the parsed fixture file and runs through all the requests
 // defined to populate the user's account

@@ -9,14 +9,11 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	ws "github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
-
-	"github.com/stripe/stripe-cli/pkg/useragent"
 )
 
 //
@@ -80,7 +77,7 @@ type Client struct {
 	// Optional configuration parameters
 	cfg *Config
 
-	conn             *ws.Conn
+	conn             wsConnIface
 	done             chan struct{}
 	isConnected      bool
 	isConnectedMutex sync.RWMutex
@@ -282,61 +279,10 @@ var ErrUnknownID = errors.New(unknownIDMessage)
 // connect makes a single attempt to connect to the websocket URL. It returns
 // the success of the attempt.
 
-func (c *Client) connect(ctx context.Context) error {
-	header := http.Header{}
-	// Disable compression by requiring "identity"
-	header.Set("Accept-Encoding", "identity")
-	header.Set("User-Agent", useragent.GetEncodedUserAgent())
-	header.Set("X-Stripe-Client-User-Agent", useragent.GetEncodedStripeUserAgent())
-	header.Set("Websocket-Id", c.WebSocketID)
-
-	url := c.URL
-	if c.cfg.NoWSS && strings.HasPrefix(url, "wss") {
-		url = "ws" + strings.TrimPrefix(c.URL, "wss")
-	}
-
-	url = url + "?websocket_feature=" + c.WebSocketAuthorizedFeature
-
-	c.cfg.Log.WithFields(log.Fields{
-		"prefix": "websocket.Client.connect",
-		"url":    url,
-	}).Debug("Dialing websocket")
-
-	conn, resp, err := c.cfg.Dialer.DialContext(ctx, url, header)
-	if err != nil {
-		message := readWSConnectErrorMessage(resp)
-		c.cfg.Log.WithFields(log.Fields{
-			"prefix":  "websocket.Client.connect",
-			"error":   err,
-			"message": message,
-		}).Debug("Websocket connection error")
-		if message == unknownIDMessage {
-			return ErrUnknownID
-		}
-		return err
-	}
-
-	defer resp.Body.Close()
-
-	c.changeConnection(conn)
-	c.setIsConnected(true)
-
-	c.wg = &sync.WaitGroup{}
-	c.wg.Add(2)
-
-	go c.readPump()
-
-	go c.writePump()
-
-	c.cfg.Log.WithFields(log.Fields{
-		"prefix": "websocket.Client.connect",
-	}).Debug("Connected!")
-
-	return err
-}
+// Disable compression by requiring "identity"
 
 // changeConnection takes a new connection and recreates the channels.
-func (c *Client) changeConnection(conn *ws.Conn) {
+func (c *Client) changeConnection(conn wsConnIface) {
 	c.stopReadPumpMutex.Lock()
 	defer c.stopReadPumpMutex.Unlock()
 	c.conn = conn

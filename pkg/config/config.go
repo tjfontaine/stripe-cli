@@ -20,7 +20,6 @@ import (
 	prefixed "github.com/x-cray/logrus-prefixed-formatter"
 
 	"github.com/stripe/stripe-cli/pkg/ansi"
-	"github.com/stripe/stripe-cli/pkg/git"
 )
 
 // ColorOn represnets the on-state for colors
@@ -190,19 +189,6 @@ func (c *Config) InitConfig() {
 
 	// redact livemode values for existing configs
 	c.Profile.redactAllLivemodeValues()
-}
-
-// EditConfig opens the configuration file in the default editor.
-func (c *Config) EditConfig() error {
-	fmt.Println("Opening config file:", c.ProfilesFile)
-
-	editor, err := git.NewEditor(c.ProfilesFile)
-	if err != nil {
-		return err
-	}
-
-	_, err = editor.EditContent()
-	return err
 }
 
 func (c *Config) CopyProfile(source string, target string) error {

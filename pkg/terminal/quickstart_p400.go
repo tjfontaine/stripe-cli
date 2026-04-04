@@ -1,3 +1,5 @@
+//go:build !wasip1
+
 // Package terminal provides commands for managing Stripe Terminal readers.
 package terminal
 

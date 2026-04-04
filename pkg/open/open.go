@@ -1,3 +1,5 @@
+//go:build !wasip1
+
 // Package open provides utilities for opening URLs in a browser.
 package open
 

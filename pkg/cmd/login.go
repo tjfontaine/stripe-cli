@@ -1,10 +1,7 @@
 package cmd
 
 import (
-	"os"
-
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/stripe/stripe-cli/pkg/login"
 	"github.com/stripe/stripe-cli/pkg/stripe"
@@ -125,7 +122,7 @@ func (lc *loginCmd) runLoginCmd(cmd *cobra.Command, args []string) error {
 		return login.PollForLogin(cmd.Context(), lc.completeURL, &Config)
 	}
 
-	if lc.nonInteractive || !term.IsTerminal(int(os.Stdin.Fd())) {
+	if lc.nonInteractive {
 		return login.InitiateLogin(cmd.Context(), lc.dashboardBaseURL, &Config)
 	}
 

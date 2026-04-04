@@ -98,3 +98,12 @@ require (
 	golang.org/x/text v0.34.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
+
+// wasip1 WASM compatibility patches
+replace github.com/sirupsen/logrus v1.9.4 => ./wasm/patches/logrus
+
+// wasip1 WASM compatibility: adds worktree_wasip1.go
+replace github.com/go-git/go-git/v5 v5.17.1 => ./wasm/patches/go-git
+
+// wasip1 WASM compatibility: adds stubs for named pipes and ltimes
+replace github.com/otiai10/copy v1.14.1 => ./wasm/patches/otiai10-copy
